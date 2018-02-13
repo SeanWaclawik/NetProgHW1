@@ -12,8 +12,12 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <assert.h>
+#include <time.h>
+#include <sys/time.h>
 
 #define BUFSIZE 516
+#define RETRANS_TIMEOUT 1 // seconds
+#define ABORT_TIMEOUT 10 // seconds
 
 enum opcode {
 	RRQ = 1,		// Read Request
@@ -93,7 +97,27 @@ void send_data(int sockfd, unsigned short int block, char data[], int size,
 
 void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info* pc_info) {
 	
-	info(getpid(), "entered read request\n");
+	// if our last contact was more than ABORT_TIMEOUT seconds we're going to kill it
+	time_t time1, time2;
+	double elapsed = 0.0;
+
+
+	// Set the retransmit timer
+	struct timeval tv;
+	tv.tv_sec = RETRANS_TIMEOUT;
+	tv.tv_usec = 0;
+
+
+	// set the rcv socket to timeout
+	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
+    	perror("Error: could not set timeout value for socket");
+    	exit(-1);
+	}
+	
+	// Start timer1 counting up
+	time(&time1);
+
+	info(getpid(), "Started timeout timers, entered read request\n");
 
 	char sendbuf[BUFSIZE-4];
 
@@ -140,23 +164,42 @@ void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info*
 
 
 newblock:
+
 	/* send data to client */
 	while (copied < BUFSIZE-4) {
 		c = fgetc(fp);
 		if (c == EOF) break;
 		sendbuf[copied] = c;
 		copied = copied+1;
-
 	}
 
 	sendbuf[copied] = '\0';
 	send_data(sockfd, block, sendbuf, copied, pc_info->serveraddr, pc_info->server_len);
 	
-	n = recvfrom(sockfd, buffer, BUFSIZE, 0, (struct sockaddr*) pc_info->childaddr, &(pc_info->child_len));
-	if(n < 0) {
-		perror("recvfrom()");
+	do {
+		// keep attempting to resend until our abort threshold is hit
+		// get the current time
+		time(&time2);
+		// this gets the diff in seconds between time 2 and our last contact (time1)
+		elapsed = difftime(time1, time2);
+
+		n = recvfrom(sockfd, buffer, BUFSIZE, 0, (struct sockaddr*) pc_info->childaddr, &(pc_info->child_len));
+		if (n < 0) {
+			info(getpid(), "WARNING: recvfrom() timeout, trying resend..");
+			// resend last
+			send_data(sockfd, block, sendbuf, copied, pc_info->serveraddr, pc_info->server_len);
+		}
+
+	} while (n < 0 && elapsed < ABORT_TIMEOUT);
+	if(n < 0 || elapsed >= ABORT_TIMEOUT) {
+		perror("ERROR: recvfrom() abort timeout");
 		exit(-1);
 	}
+
+	// else we made contact
+	// reset our first timer
+	time(&time1);
+
 
 	/* first two bytes should be ACK opcode */
 	opcode_ptr = (unsigned short int*) buffer;
@@ -203,8 +246,27 @@ newblock:
 }
 
 void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info* pc_info) {
+	// if our last contact was more than ABORT_TIMEOUT seconds we're going to kill it
+	time_t time1, time2;
+	double elapsed = 0.0;
+
+
+	// Set the retransmit timer
+	struct timeval tv;
+	tv.tv_sec = RETRANS_TIMEOUT;
+	tv.tv_usec = 0;
+
 	
-	info(getpid(), "entered write request\n");
+	// set the rcv socket to timeout
+	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
+    	perror("Error: could not set timeout value for socket");
+    	exit(-1);
+	}
+	
+	// Start timer1 counting up
+	time(&time1);
+
+	info(getpid(), "Sarted timout timers, entered write request\n");
 	int i, n = BUFSIZE;
 	unsigned short int *opcode_ptr;
 	unsigned short int *block_ptr;
