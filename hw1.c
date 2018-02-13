@@ -127,6 +127,7 @@ void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info*
 		n = sendto(sockfd, buffer, 5, 0, (struct sockaddr*) pc_info->serveraddr, 
 							pc_info->server_len);
 		if(n < 0) {
+			free(fname);
 			perror("child: sendto()");
 			exit(-1);
 		}
@@ -134,6 +135,7 @@ void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info*
 		perror("child: fopen()");
 		exit(-1);
 	}
+	free(fname);
 
 
 
