@@ -18,6 +18,7 @@
 #define BUFSIZE 516
 #define RETRANS_TIMEOUT 1 // seconds
 #define ABORT_TIMEOUT 10 // seconds
+#define ERRSIZE 32
 
 enum opcode {
 	RRQ = 1,		// Read Request
@@ -38,6 +39,18 @@ enum errcode {
 	NO_SUCH_USER =			7
 };
 
+char error_messages[8][ERRSIZE] = {
+	"Not defined\0", 
+	"File not found\0", 
+	"Access violation\0", 
+	"Disk full\0", 
+	"Illegal operation\0", 
+	"Unknown port\0", 
+	"File already exists\0",
+	"No such user\0"
+};
+
+
 /* parent/child socket info */
 struct pc_socket_info {
 	struct sockaddr_in *serveraddr;
@@ -50,28 +63,52 @@ void info(int pid, char *s) {
 	printf("[%d] %s", pid, s);
 }
 
+/* sends ACK packet to the specified address via sendto() */
 void send_acknowledgement(int sockfd, unsigned short int block, 
 				struct sockaddr_in* serveraddr, socklen_t sockaddr_len) {
 	
 	char buffer[4];
 	unsigned short int opcode = htons(ACK);
-	unsigned short int zero = htons(0);
 	block = htons(block);
 	int i;
 	
-	memcpy(buffer, &opcode, 2);
+	/* construct packet */
+	memset(&buffer, 0, BUFSIZE);
 	
-	if(block == zero) memcpy(buffer+2, &zero, 2);
-	else memcpy(buffer+2, &block, 2);
+	memcpy(buffer, &opcode, 2);		// opcode (first two bytes)
+	memcpy(buffer+2, &block, 2);	// block# (third & fourth bytes)
 
+	/* send packet */
 	i = sendto(sockfd, buffer, 4, 0, (struct sockaddr*) serveraddr, sockaddr_len);
 	if (i < 0) {
 		info(getpid(), "sendto() error\n");
 		perror("sendto()");
 		exit(-1);
 	}
-};
+}
 
+/* sends ERROR packet to the specified address via sendto() */
+int send_error(int sockfd, unsigned short int block, unsigned short int error_code,
+				struct sockaddr_in* serveraddr, socklen_t sockaddr_len) {
+	
+	char buffer[BUFSIZE];
+	unsigned short int opcode = htons(ERROR);
+	block = htons(block);
+	
+	char *error_msg = error_messages[error_code];
+
+	/* construct packet */
+	memset(&buffer, 0, BUFSIZE);
+	
+	memcpy(buffer, &opcode, 2);			// opcode (first two bytes)
+	memcpy(buffer+2, &block, 2);		// block# (third & fourth bytes)
+	memcpy(buffer+4, &error_msg, ERRSIZE);	// error message (additional 0-512 bytes)
+
+	/* send packet */
+	return sendto(sockfd, buffer, sizeof(error_msg)+4, 0, (struct sockaddr*) serveraddr, sockaddr_len);
+}
+
+/* sends DATA packet to the specified address via sendto() */
 void send_data(int sockfd, unsigned short int block, char data[], int size,
 				struct sockaddr_in* serveraddr, socklen_t sockaddr_len) {
 
@@ -80,21 +117,24 @@ void send_data(int sockfd, unsigned short int block, char data[], int size,
 	block = htons(block);
 	int i;
 	
+	/* construct packet */
 	memset(&buffer, 0, BUFSIZE);
 
-	memcpy(buffer, &opcode, 2);
-	memcpy(buffer+2, &block, 2);
-	memcpy(buffer+4, &data, size);
+	memcpy(buffer, &opcode, 2);		// opcode (first two bytes)
+	memcpy(buffer+2, &block, 2);	// block# (third & fourth bytes)
+	memcpy(buffer+4, &data, size);	// data   (additional 0-512 bytes)
 
+	/* send packet */
 	i = sendto(sockfd, buffer, size+4, 0, (struct sockaddr*) serveraddr, sockaddr_len);
 	if (i < 0) {
 		info(getpid(), "sendto() error\n");
 		perror("sendto()");
 		exit(-1);
 	}
-
 }
 
+
+/* handles tftp server RRQ opcode */
 void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info* pc_info) {
 	
 	// if our last contact was more than ABORT_TIMEOUT seconds we're going to kill it
@@ -140,23 +180,18 @@ void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info*
 
 	/* open file to write */
 	FILE *fp = fopen(fname, "r");
-	if(fp == NULL) { /* error, file not found */
+
+	/* error, file not found */
+	if(fp == NULL) { 					
 		errcode = FILE_NOT_FOUND;
-		opcode_ptr = (unsigned short int*) buffer;
-
-		*opcode_ptr = htons(ERROR);
-		*(opcode_ptr + 1) = htons(errcode);
-		*(buffer + 4) = 0;
-
-		n = sendto(sockfd, buffer, 5, 0, (struct sockaddr*) pc_info->serveraddr, 
-							pc_info->server_len);
+		n = send_error(sockfd, block, errcode, pc_info->serveraddr, pc_info->server_len);
 		if(n < 0) {
 			free(fname);
-			perror("child: sendto()");
+			perror("child: RRQ send_error()");
 			exit(-1);
 		}
 		free(fname);
-		perror("child: fopen()");
+		perror("child: RRQ fopen()");
 		exit(-1);
 	}
 	free(fname);
@@ -207,14 +242,10 @@ newblock:
 	
 	if(opcode != ACK) {
 		printf("error: did not receive ACK opcode\n");
-		*opcode_ptr = htons(ERROR);
-		*(opcode_ptr + 1) = htons(4);
-		*(buffer + 4) = 0;
-
-		n = sendto(sockfd, buffer, 5, 0, (struct sockaddr*) pc_info->serveraddr, 
-							pc_info->server_len);
+		errcode = ILLEGAL_OP;
+		n = send_error(sockfd, block, errcode, pc_info->serveraddr, pc_info->server_len);
 		if(n < 0) {
-			perror("child: sendto()");
+			perror("child: RRQ sendto()");
 			exit(-1);
 		}
 	}
@@ -245,6 +276,7 @@ newblock:
 	return;
 }
 
+/* handles tftp server WRQ opcode */
 void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info* pc_info) {
 	// if our last contact was more than ABORT_TIMEOUT seconds we're going to kill it
 	time_t time1, time2;
@@ -270,7 +302,7 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 	int i, n = BUFSIZE;
 	unsigned short int *opcode_ptr;
 	unsigned short int *block_ptr;
-	unsigned short int opcode, block, prevblock;
+	unsigned short int opcode, errcode, block = 0, prevblock;
 
 	/* get file name from the request */
 	char *fname = calloc(128, sizeof(char));
@@ -283,16 +315,29 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 	/* open file to write */
 	FILE *fp = fopen(fname, "w");
 	if(fp == NULL) {
-		perror("child: fopen()");
+
+		/* log and send error message to client */
+		perror("child: WRQ fopen()");
+		errcode = NOT_DEFINED;
+		n = send_error(sockfd, block, errcode, pc_info->serveraddr, pc_info->server_len);
+		if (n < 1) {
+			perror("child: WRQ fopen() send_error()");
+			free(fname);
+			exit(-1);
+		}
+		free(fname);	
 		exit(-1);
 	}
+	free(fname);
 
 	/* send ack to client, then start copying data */
 	send_acknowledgement(sockfd, 0, pc_info->serveraddr, pc_info->server_len);
 	prevblock = 0;
 
+	/* receive data until n < 516 */
 	do {
 
+<<<<<<< HEAD
 
 		do {
 			// keep attempting to resend until our abort threshold is hit
@@ -316,6 +361,11 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 		} while (n < 0 && elapsed < ABORT_TIMEOUT);
 		if(n < 0 || elapsed >= ABORT_TIMEOUT) {
 			perror("ERROR: recvfrom() abort timeout");
+=======
+		n = recvfrom(sockfd, buffer, BUFSIZE, 0, (struct sockaddr*) pc_info->childaddr, &(pc_info->child_len));
+		if(n < 0) {
+			perror("recvfrom()");
+>>>>>>> e306ccdaed08d58581f03b70fbce691f4ee0a13c
 			exit(-1);
 		}
 		// we got our a response, reset timer
@@ -329,13 +379,10 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 		opcode = ntohs (*opcode_ptr);
 		
 		if(opcode != DATA) {
+			/* log and send error message to client */
 			printf("error: did not receive DATA opcode\n");
-			*opcode_ptr = htons(ERROR);
-			*(opcode_ptr + 1) = htons(4);
-			*(buffer + 4) = 0;
-
-			n = sendto(sockfd, buffer, 5, 0, (struct sockaddr*) pc_info->serveraddr, 
-								pc_info->server_len);
+			errcode = ILLEGAL_OP;
+			n = send_error(sockfd, block, errcode, pc_info->serveraddr, pc_info->server_len);
 			if(n < 0) {
 				perror("child: sendto()");
 				exit(-1);
@@ -367,7 +414,7 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 	}
 
 
-	info(getpid(), "done getting data\n");
+	// info(getpid(), "done getting data\n");
 	free(fname);
 	fclose(fp);
 	return;
