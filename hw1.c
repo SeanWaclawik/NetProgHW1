@@ -337,7 +337,6 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 	/* receive data until n < 516 */
 	do {
 
-<<<<<<< HEAD
 
 		do {
 			// keep attempting to resend until our abort threshold is hit
@@ -361,11 +360,6 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 		} while (n < 0 && elapsed < ABORT_TIMEOUT);
 		if(n < 0 || elapsed >= ABORT_TIMEOUT) {
 			perror("ERROR: recvfrom() abort timeout");
-=======
-		n = recvfrom(sockfd, buffer, BUFSIZE, 0, (struct sockaddr*) pc_info->childaddr, &(pc_info->child_len));
-		if(n < 0) {
-			perror("recvfrom()");
->>>>>>> e306ccdaed08d58581f03b70fbce691f4ee0a13c
 			exit(-1);
 		}
 		// we got our a response, reset timer
