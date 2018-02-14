@@ -1,1 +1,4 @@
-# NetProgHW1
+NetProg HW1
+Sean Waclawik and Garret Premo
+
+
