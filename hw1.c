@@ -72,7 +72,7 @@ void send_acknowledgement(int sockfd, unsigned short int block,
 	}
 };
 
-void send_data(int sockfd, unsigned short int block, char data[], int size,
+void send_data(int sockfd, unsigned short int block, char *data, int size,
 				struct sockaddr_in* serveraddr, socklen_t sockaddr_len) {
 
 	char buffer[BUFSIZE];
@@ -84,7 +84,7 @@ void send_data(int sockfd, unsigned short int block, char data[], int size,
 
 	memcpy(buffer, &opcode, 2);
 	memcpy(buffer+2, &block, 2);
-	memcpy(buffer+4, &data, size);
+	memcpy(buffer+4, data, size);
 
 	i = sendto(sockfd, buffer, size+4, 0, (struct sockaddr*) serveraddr, sockaddr_len);
 	if (i < 0) {
@@ -119,7 +119,6 @@ void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info*
 
 	info(getpid(), "Started timeout timers, entered read request\n");
 
-	char sendbuf[BUFSIZE-4];
 
 	unsigned short int *opcode_ptr;
 	unsigned short int *block_ptr;
@@ -127,12 +126,10 @@ void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info*
 	int i, n, copied = 0;
 	char c;
 
-	memset(&sendbuf, 0, BUFSIZE);
-
 	/* get file name from the request */
 	char *fname = calloc(128, sizeof(char));
 
-	for(i = 2; i < 512; i++) {
+	for(i = 2; i < 128; i++) {
 		fname[i-2] = buffer[i];
 		if (buffer[i] == '\0') break;
 	}
@@ -161,17 +158,20 @@ void do_read_request(int sockfd, char buffer[], int size, struct pc_socket_info*
 	}
 	free(fname);
 
-
+	/* dynamically allocate memory for a buffer to send */
+	char *sendbuf = calloc(BUFSIZE-4, sizeof(char));
 
 newblock:
 
 	/* send data to client */
 	while (copied < BUFSIZE-4) {
 		c = fgetc(fp);
+		printf("%c", c);
 		if (c == EOF) break;
 		sendbuf[copied] = c;
 		copied = copied+1;
 	}
+	printf("\n");
 
 	sendbuf[copied] = '\0';
 	send_data(sockfd, block, sendbuf, copied, pc_info->serveraddr, pc_info->server_len);
@@ -193,6 +193,7 @@ newblock:
 	} while (n < 0 && elapsed < ABORT_TIMEOUT);
 	if(n < 0 || elapsed >= ABORT_TIMEOUT) {
 		perror("ERROR: recvfrom() abort timeout");
+		free(sendbuf);
 		exit(-1);
 	}
 
@@ -215,6 +216,7 @@ newblock:
 							pc_info->server_len);
 		if(n < 0) {
 			perror("child: sendto()");
+			free(sendbuf);
 			exit(-1);
 		}
 	}
@@ -239,9 +241,10 @@ newblock:
 		if(copied == 512) { // send a final block of size 0 to end transmission
 			block += 1;
 			send_data(sockfd, block, sendbuf, 0, pc_info->serveraddr, pc_info->server_len);
+			printf("successfully sent block %d; copied %d bytes\n", block, copied);
 		}
 	}
-	
+	free(sendbuf);
 	return;
 }
 
@@ -275,7 +278,7 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 	/* get file name from the request */
 	char *fname = calloc(128, sizeof(char));
 
-	for(i = 2; i < 512; i++) {
+	for(i = 2; i < 128; i++) {
 		fname[i-2] = buffer[i];
 		if (buffer[i] == '\0') break;
 	}
@@ -332,7 +335,7 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 		}
 
 		/* data starts at byte 4 */
-		for(i = 4; i < n+4; i++) {
+		for(i = 4; i < n; i++) {
 			if(buffer[i] == '\0') { break; } 
 			fprintf(fp, "%c", buffer[i]);
 		}
