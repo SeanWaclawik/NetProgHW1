@@ -295,17 +295,33 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 	prevblock = 0;
 
 	do {
-		// keep attempting to resend until our abort threshold is hit
-		// get the current time
-		time(&time2);
-		// this gets the diff in seconds between time 2 and our last contact (time1)
-		elapsed = difftime(time1, time2);
-		
-		n = recvfrom(sockfd, buffer, BUFSIZE, 0, (struct sockaddr*) pc_info->childaddr, &(pc_info->child_len));
-		if(n < 0) {
-			perror("recvfrom()");
+
+		do {
+			// keep attempting to resend until our abort threshold is hit
+			// get the current time
+			time(&time2);
+			// this gets the diff in seconds between time 2 and our last contact (time1)
+			elapsed = difftime(time1, time2);
+			
+
+			n = recvfrom(sockfd, buffer, BUFSIZE, 0, (struct sockaddr*) pc_info->childaddr, &(pc_info->child_len));
+			if(n < 0) {
+				//perror("recvfrom()");
+				//exit(-1);
+				info(getpid(), "WARNING: recvfrom() timeout, trying resend..");
+				// resend last
+				send_acknowledgement(sockfd, 0, pc_info->serveraddr, pc_info->server_len);
+
+			}
+		} while (n < 0 && elapsed < ABORT_TIMEOUT);
+		if(n < 0 || elapsed >= ABORT_TIMEOUT) {
+			perror("ERROR: recvfrom() abort timeout");
 			exit(-1);
 		}
+		// else .. 
+
+		// we got our a response, reset timer
+		time(&time1);
 
 		/* first two bytes should be DATA opcode */
 		opcode_ptr = (unsigned short int*) buffer;
@@ -341,7 +357,16 @@ void do_write_request(int sockfd, char buffer[], int size, struct pc_socket_info
 		}
 		prevblock = block;
 		send_acknowledgement(sockfd, block, pc_info->serveraddr, pc_info->server_len);
+
+		// this gets the diff in seconds between time 2 and our last contact (time1)
+		elapsed = difftime(time1, time2);
 	} while ( n == BUFSIZE && elapsed < ABORT_TIMEOUT);
+
+	// we got our a response, reset timer
+		time(&time1);
+	// this gets the diff in seconds between time 2 and our last contact (time1)
+		elapsed = difftime(time1, time2);
+
 
 	if (elapsed >= ABORT_TIMEOUT){
 		// tried too many times, kill connection
